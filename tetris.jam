@@ -1,7 +1,16 @@
 const { assert } = import("test");
 
-fn main() u8 {
-	return 0;
+extern fn setenv(name: [*]u8, value: [*]u8, overwrite: i32) i32;
+
+fn main() {
+	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
+    // xterm-kitty, and xterm-rio terminfo entries make ncurses skip the
+    // bottom-row redraw through a capability those terminals implement
+    // differently than xterm.
+    var termVar: []u8 = "TERM";
+    var termVal: []u8 = "xterm-256color";
+    setenv(termVar.ptr, termVal.ptr, 1);
+
 }
 
 const Block = struct {
@@ -10,6 +19,22 @@ const Block = struct {
     originY: i8,
     // represent 3 extra cells relative to the origin, packed as (dx,dy) pairs.
     cells: [6]i8,
+};
+
+const Game = struct {
+    block: Block,
+    // Row-major, 10 cols x 22 rows; 0 = empty. Rows 1..20 are the visible
+    // play area; rows 21..22 cover the spawn zone so we can detect
+    // game-over when a freshly spawned piece overlaps the existing stack.
+    board: [220]u8,
+    nextShape: u8,
+    bag: [28]u8,
+    bagHead: u8,
+    score: u32,
+    linesCleared: u16,
+    level: u8,
+    progression: bool,
+    rngState: u32,
 };
 
 // this was inspired by github.com/samtay/tetris refcells logic
