@@ -8,6 +8,8 @@ const { assert } = import("test");
 // TODO: I am not sure about [*] notation, for now I am following zig idea but
 // it's very likely it will change.
 
+// TODO: Need to evaluate C exports depending of jam build options (more tbd).
+
 extern fn initscr() *u8;
 extern fn endwin() i32;
 extern fn cbreak() i32;
@@ -988,14 +990,12 @@ tfn rotateInGameSucceeds() {
 
 tfn clearFullRowsRemovesOneFullRow() {
     var g: Game = initGame();
-    // Fill row 1 entirely.
     var c: u16 = 0;
     while (c < 10) {
         g.board[c] = 3;
         c = c + 1;
     }
     var ng: Game = clearFullRows(g);
-    // Row 1 is now empty.
     var i: u16 = 0;
     while (i < 10) {
         assert(ng.board[i], 0);
@@ -1006,7 +1006,6 @@ tfn clearFullRowsRemovesOneFullRow() {
 
 tfn clearFullRowsShiftsAboveDown() {
     var g: Game = initGame();
-    // Fill row 1 entirely; place a marker on row 2 at col 0.
     var c: u16 = 0;
     while (c < 10) {
         g.board[c] = 4;
@@ -1014,24 +1013,20 @@ tfn clearFullRowsShiftsAboveDown() {
     }
     g.board[10] = 7;  // row 2, col 0
     var ng: Game = clearFullRows(g);
-    // After clear: row 1 should now contain the previous row 2's marker.
     assert(ng.board[0], 7);
     assert(ng.board[1], 0);
-    // And the old row 2 cell is now empty (shifted down already).
     assert(ng.board[10], 0);
     assert(ng.linesCleared, 1);
 }
 
 tfn clearFullRowsClearsTwoStackedFullRows() {
     var g: Game = initGame();
-    // Fill rows 1 and 2.
     var i: u16 = 0;
     while (i < 20) {
         g.board[i] = 5;
         i = i + 1;
     }
     var ng: Game = clearFullRows(g);
-    // Both rows cleared, count = 2.
     assert(ng.linesCleared, 2);
     var j: u16 = 0;
     while (j < 20) {
