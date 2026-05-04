@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  run:
+    desc: Run tetris
+    cmds:
+      - jam run -lncurses tetris.jam
+
+  test:
+    desc: Run tests
+    cmds:
+      - jam test -lncurses tetris.jam
