@@ -36,30 +36,15 @@ fn colorPair(n: i32) i32 {
     return n << 8;
 }
 
-fn main() {
-	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
-    // xterm-kitty, and xterm-rio terminfo entries make ncurses skip the
-    // bottom-row redraw through a capability those terminals implement
-    // differently than xterm.
-    var termVar: []u8 = "TERM";
-    var termVal: []u8 = "xterm-256color";
-    setenv(termVar.ptr, termVal.ptr, 1);
-
-}
-
 const Block = struct {
     shape: u8,
     originX: i8,
     originY: i8,
-    // represent 3 extra cells relative to the origin, packed as (dx,dy) pairs.
     cells: [6]i8,
 };
 
 const Game = struct {
     block: Block,
-    // Row-major, 10 cols x 22 rows; 0 = empty. Rows 1..20 are the visible
-    // play area; rows 21..22 cover the spawn zone so we can detect
-    // game-over when a freshly spawned piece overlaps the existing stack.
     board: [220]u8,
     nextShape: u8,
     bag: [28]u8,
@@ -71,7 +56,7 @@ const Game = struct {
     rngState: u32,
 };
 
-// this was inspired by github.com/samtay/tetris refcells logic
+// it ideally tries to match github.com/samtay/tetris's relCells impl
 fn fillRelCells(shape: u8, out: [*]i8) {
     if (shape == 0) {
         // I: (-2,0), (-1,0), (1,0)
@@ -120,9 +105,1076 @@ fn initBlock(shape: u8) Block {
     return b;
 }
 
+fn boardIndex(x: i8, y: i8) u16 {
+    var col: u16 = x - 1;
+    var row: u16 = y - 1;
+    return row * 10 + col;
+}
+
+fn isInBounds(x: i8, y: i8) bool {
+    if (x < 1) {
+        return false;
+    }
+    if (x > 10) {
+        return false;
+    }
+    if (y < 1) {
+        return false;
+    }
+    return true;
+}
+
+fn isFree(g: Game, x: i8, y: i8) bool {
+    if (y > 22) {
+        return true;
+    }
+    var idx: u16 = boardIndex(x, y);
+    return g.board[idx] == 0;
+}
+
+fn isValidBlockPosition(g: Game, b: Block) bool {
+    if (!isInBounds(b.originX, b.originY)) {
+        return false;
+    }
+    if (!isFree(g, b.originX, b.originY)) {
+        return false;
+    }
+    var i: u8 = 0;
+    while (i < 3) {
+        var dx: i8 = b.cells[i * 2];
+        var dy: i8 = b.cells[i * 2 + 1];
+        var cx: i8 = b.originX + dx;
+        var cy: i8 = b.originY + dy;
+        if (!isInBounds(cx, cy)) {
+            return false;
+        }
+        if (!isFree(g, cx, cy)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn translate(b: Block, ddx: i8, ddy: i8) Block {
+    var nb: Block = b;
+    nb.originX = b.originX + ddx;
+    nb.originY = b.originY + ddy;
+    return nb;
+}
+
+fn shift(g: Game, dir: u8) Game {
+    var ddx: i8 = 0;
+    var ddy: i8 = 0;
+    if (dir == 0) {
+        ddx = -1;
+    } else if (dir == 1) {
+        ddx = 1;
+    } else {
+        ddy = -1;
+    }
+    var candidate: Block = translate(g.block, ddx, ddy);
+    if (!isValidBlockPosition(g, candidate)) {
+        return g;
+    }
+    var ng: Game = g;
+    ng.block = candidate;
+    return ng;
+}
+
+fn initGame() Game {
+    var g: Game = undefined;
+    var i: u16 = 0;
+    while (i < 220) {
+        g.board[i] = 0;
+        i = i + 1;
+    }
+    var j: u8 = 0;
+    while (j < 28) {
+        g.bag[j] = j % 7;
+        j = j + 1;
+    }
+    g.bagHead = 2;
+    g.block = initBlock(g.bag[0]);
+    g.nextShape = g.bag[1];
+    g.score = 0;
+    g.linesCleared = 0;
+    g.level = 0;
+    g.progression = true;
+    g.rngState = 1;
+    return g;
+}
+
+fn isStopped(g: Game, b: Block) bool {
+    if (b.originY == 1) {
+        return true;
+    }
+    if (!isFree(g, b.originX, b.originY - 1)) {
+        return true;
+    }
+    var i: u8 = 0;
+    while (i < 3) {
+        var dx: i8 = b.cells[i * 2];
+        var dy: i8 = b.cells[i * 2 + 1];
+        var cx: i8 = b.originX + dx;
+        var cy: i8 = b.originY + dy;
+        if (cy == 1) {
+            return true;
+        }
+        if (!isFree(g, cx, cy - 1)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn freezeBlock(g: Game) Game {
+    var ng: Game = g;
+    var marker: u8 = ng.block.shape + 1;
+    if (ng.block.originY <= 22) {
+        var idx: u16 = boardIndex(ng.block.originX, ng.block.originY);
+        ng.board[idx] = marker;
+    }
+    var i: u8 = 0;
+    while (i < 3) {
+        var dx: i8 = ng.block.cells[i * 2];
+        var dy: i8 = ng.block.cells[i * 2 + 1];
+        var cx: i8 = ng.block.originX + dx;
+        var cy: i8 = ng.block.originY + dy;
+        if (cy <= 22) {
+            var cidx: u16 = boardIndex(cx, cy);
+            ng.board[cidx] = marker;
+        }
+        i = i + 1;
+    }
+    return ng;
+}
+
+fn xorshift32(state: u32) u32 {
+    var s: u32 = state;
+    s = s ^ (s << 13);
+    s = s ^ (s >> 17);
+    s = s ^ (s << 5);
+    return s;
+}
+
+fn shuffleBag(g: Game) Game {
+    var ng: Game = g;
+    var i: u32 = 27;
+    while (i > 0) {
+        ng.rngState = xorshift32(ng.rngState);
+        var j: u32 = ng.rngState % (i + 1);
+        var tmp: u8 = ng.bag[i];
+        ng.bag[i] = ng.bag[j];
+        ng.bag[j] = tmp;
+        i = i - 1;
+    }
+    return ng;
+}
+
+fn nextBlock(g: Game) Game {
+    var ng: Game = g;
+    ng.block = initBlock(ng.nextShape);
+    if (ng.bagHead >= 28) {
+        var k: u8 = 0;
+        while (k < 28) {
+            ng.bag[k] = k % 7;
+            k = k + 1;
+        }
+        ng.bagHead = 0;
+        ng = shuffleBag(ng);
+    }
+    ng.nextShape = ng.bag[ng.bagHead];
+    ng.bagHead = ng.bagHead + 1;
+    return ng;
+}
+
+// todo this actually is buggy
+fn levelFinished(g: Game) bool {
+    if (g.level >= 15) {
+        return false;
+    }
+    var threshold: u16 = 10 * (g.level + 1);
+    return g.linesCleared >= threshold;
+}
+
+fn nextLevel(g: Game) Game {
+    g.level = g.level + 1;
+    return g;
+}
+
+fn rotateRaw(b: Block) Block {
+    if (b.shape == 1) {
+        return b;
+    }
+    var clockwise: bool = false;
+    if (b.shape == 0) {
+        var i: u8 = 0;
+        while (i < 3) {
+            if (b.cells[i * 2] == 0) {
+                if (b.cells[i * 2 + 1] == 1) {
+                    clockwise = true;
+                }
+            }
+            i = i + 1;
+        }
+    }
+    var nb: Block = b;
+    var j: u8 = 0;
+    while (j < 3) {
+        var dx: i8 = b.cells[j * 2];
+        var dy: i8 = b.cells[j * 2 + 1];
+        if (clockwise) {
+            nb.cells[j * 2] = dy;
+            nb.cells[j * 2 + 1] = -dx;
+        } else {
+            nb.cells[j * 2] = -dy;
+            nb.cells[j * 2 + 1] = dx;
+        }
+        j = j + 1;
+    }
+    return nb;
+}
+
+fn rotate(g: Game) Game {
+    var r: Block = rotateRaw(g.block);
+    if (isValidBlockPosition(g, r)) {
+        g.block = r;
+        return g;
+    }
+    r = rotateRaw(translate(g.block, -1, 0));
+    if (isValidBlockPosition(g, r)) {
+        g.block = r;
+        return g;
+    }
+    r = rotateRaw(translate(g.block, 1, 0));
+    if (isValidBlockPosition(g, r)) {
+        g.block = r;
+        return g;
+    }
+    return g;
+}
+
+fn clearFullRows(g: Game) Game {
+    var ng: Game = g;
+    var cleared: u16 = 0;
+    var row: u16 = 1;
+    while (row <= 20) {
+        var filled: u8 = 0;
+        var col: u16 = 0;
+        while (col < 10) {
+            var idx: u16 = (row - 1) * 10 + col;
+            if (ng.board[idx] != 0) {
+                filled = filled + 1;
+            }
+            col = col + 1;
+        }
+        if (filled == 10) {
+            var fromRow: u16 = row;
+            while (fromRow < 22) {
+                var c: u16 = 0;
+                while (c < 10) {
+                    var srcIdx: u16 = fromRow * 10 + c;
+                    var dstIdx: u16 = (fromRow - 1) * 10 + c;
+                    ng.board[dstIdx] = ng.board[srcIdx];
+                    c = c + 1;
+                }
+                fromRow = fromRow + 1;
+            }
+            var topCol: u16 = 0;
+            while (topCol < 10) {
+                ng.board[210 + topCol] = 0;
+                topCol = topCol + 1;
+            }
+            cleared = cleared + 1;
+        } else {
+            row = row + 1;
+        }
+    }
+    ng.linesCleared = ng.linesCleared + cleared;
+    return ng;
+}
+
+// follows the scoring table (https://tetris.fandom.com/wiki/Scoring): single
+// line = 40, double = 100, triple = 300, tetris = 1200, all multiplied by
+// (level + 1). 0 lines = no change.
+fn updateScore(g: Game, lines: u16) Game {
+    if (lines == 0) {
+        return g;
+    }
+    var basePoints: u32 = 0;
+    if (lines == 1) {
+        basePoints = 40;
+    } else if (lines == 2) {
+        basePoints = 100;
+    } else if (lines == 3) {
+        basePoints = 300;
+    } else {
+        basePoints = 1200;
+    }
+    var lvlPlus1: u32 = g.level + 1;
+    g.score = g.score + basePoints * lvlPlus1;
+    return g;
+}
+
+fn isGameOver(g: Game) bool {
+    if (g.block.originX != 6) {
+        return false;
+    }
+    if (g.block.originY != 22) {
+        return false;
+    }
+    return isStopped(g, g.block);
+}
+
+fn hardDroppedBlock(g: Game) Block {
+    var b: Block = g.block;
+    while (true) {
+        var candidate: Block = translate(b, 0, -1);
+        if (!isValidBlockPosition(g, candidate)) {
+            break;
+        }
+        b = candidate;
+    }
+    return b;
+}
+
+fn hardDrop(g: Game) Game {
+    g.block = hardDroppedBlock(g);
+    return g;
+}
+
+fn timeStep(g: Game) Game {
+    if (isStopped(g, g.block)) {
+        var ng: Game = freezeBlock(g);
+        var linesBefore: u16 = ng.linesCleared;
+        ng = clearFullRows(ng);
+        var newLines: u16 = ng.linesCleared - linesBefore;
+        ng = updateScore(ng, newLines);
+        if (ng.progression) {
+            if (levelFinished(ng)) {
+                ng = nextLevel(ng);
+            }
+        }
+        ng = nextBlock(ng);
+        return ng;
+    }
+    return shift(g, 2);
+}
+
+fn initColors() {
+    start_color();
+    use_default_colors();
+    init_pair(1, 6, 6); // I = cyan
+    init_pair(2, 3, 3); // O = yellow
+    init_pair(3, 5, 5); // T = magenta
+    init_pair(4, 2, 2); // S = green
+    init_pair(5, 1, 1); // Z = red
+    init_pair(6, 4, 4); // J = blue
+    init_pair(7, 7, 7); // L = white
+    init_pair(8, 6, -1);  // I ghost
+    init_pair(9, 3, -1);  // O ghost
+    init_pair(10, 5, -1); // T ghost
+    init_pair(11, 2, -1); // S ghost
+    init_pair(12, 1, -1); // Z ghost
+    init_pair(13, 4, -1); // J ghost
+    init_pair(14, 7, -1); // L ghost
+}
+
+fn drawVEdge(row: i32, col: i32, len: i32) {
+    var vbar: []u8 = "\u{2502}";  // │
+    var i: i32 = 0;
+    while (i < len) {
+        mvaddstr(row + i, col, vbar.ptr);
+        i = i + 1;
+    }
+}
+
+fn drawBottomEdge(row: i32, left: i32, width: i32) {
+    var llc: []u8 = "\u{2514}";  // └
+    var hbar: []u8 = "\u{2500}"; // ─
+    var lrc: []u8 = "\u{2518}";  // ┘
+    mvaddstr(row, left, llc.ptr);
+    var c: i32 = 1;
+    while (c < width - 1) {
+        mvaddstr(row, left + c, hbar.ptr);
+        c = c + 1;
+    }
+    mvaddstr(row, left + width - 1, lrc.ptr);
+}
+
+fn fillEmptyGrid() {
+    var row: i32 = 1;
+    while (row <= 20) {
+        var col: i32 = 0;
+        while (col < 10) {
+            var sr: i32 = 22 - row;
+            var sc: i32 = col * 2 + 17;
+            mvaddch(sr, sc, 32);     // ' '
+            mvaddch(sr, sc + 1, 46); // '.'
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn drawCell(gameX: i8, gameY: i8, marker: u8) {
+    if (gameY < 1) {
+        return;
+    }
+    if (gameY > 20) {
+        return;
+    }
+    var screenRow: i32 = 22 - gameY;
+    var screenCol: i32 = gameX * 2 + 15;
+    var attr: i32 = colorPair(marker);
+    attron(attr);
+    mvaddch(screenRow, screenCol, 32);
+    mvaddch(screenRow, screenCol + 1, 32);
+    attroff(attr);
+}
+
+fn drawGhostCell(gameX: i8, gameY: i8, marker: u8) {
+    if (gameY < 1) {
+        return;
+    }
+    if (gameY > 20) {
+        return;
+    }
+    var screenRow: i32 = 22 - gameY;
+    var screenCol: i32 = gameX * 2 + 15;
+    var ghostMarker: u8 = marker + 7;
+    var attr: i32 = colorPair(ghostMarker);
+    attron(attr);
+    mvaddch(screenRow, screenCol, 32);
+    mvaddch(screenRow, screenCol + 1, 46);
+    attroff(attr);
+}
+
+fn drawScreenCell(row: i32, col: i32, marker: u8) {
+    var attr: i32 = colorPair(marker);
+    attron(attr);
+    mvaddch(row, col, 32);
+    mvaddch(row, col + 1, 32);
+    attroff(attr);
+}
+
+fn drawNextPreview(shape: u8) {
+    var marker: u8 = shape + 1;
+    var b: Block = initBlock(shape);
+    var originRow: i8 = 4;
+    var originCol: i8 = 46;
+    var oRow: i32 = originRow;
+    var oCol: i32 = originCol;
+    drawScreenCell(oRow, oCol, marker);
+    var i: u8 = 0;
+    while (i < 3) {
+        var dx: i8 = b.cells[i * 2];
+        var dy: i8 = b.cells[i * 2 + 1];
+        // game y grows up; screen row grows down. Shift cell row by -dy.
+        var sr8: i8 = originRow - dy;
+        var sc8: i8 = originCol + dx * 2;
+        var sr: i32 = sr8;
+        var sc: i32 = sc8;
+        drawScreenCell(sr, sc, marker);
+        i = i + 1;
+    }
+}
+
+fn beginSyncOutput() {
+    var seq: []u8 = "\u{001B}[?2026h";
+    write(1, seq.ptr, seq.len);
+}
+
+fn endSyncOutput() {
+    var seq: []u8 = "\u{001B}[?2026l";
+    write(1, seq.ptr, seq.len);
+}
+
+fn renderGame(g: Game) {
+    beginSyncOutput();
+    clear();
+
+    var statsTop: []u8 = "\u{250C}\u{2500}\u{2500} Stats \u{2500}\u{2500}\u{2500}\u{2510}";
+    mvaddstr(1, 1, statsTop.ptr);
+    drawBottomEdge(8, 1, 14);
+    drawVEdge(2, 1, 6);
+    drawVEdge(2, 14, 6);
+    var scoreFmt: []u8 = "Score: %u";
+    mvprintw(3, 3, scoreFmt.ptr, g.score);
+    var linesFmt: []u8 = "Lines: %u";
+    var lines: u32 = g.linesCleared;
+    mvprintw(5, 3, linesFmt.ptr, lines);
+    var levelFmt: []u8 = "Level: %u";
+    var lvl: u32 = g.level;
+    mvprintw(7, 3, levelFmt.ptr, lvl);
+
+    var gameTop: []u8 = "\u{250C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} Tetris \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}";
+    mvaddstr(1, 16, gameTop.ptr);
+    drawBottomEdge(22, 16, 22);
+    drawVEdge(2, 16, 20);
+    drawVEdge(2, 37, 20);
+    fillEmptyGrid();
+
+    var ghost: Block = hardDroppedBlock(g);
+    var ghostMarker: u8 = ghost.shape + 1;
+    drawGhostCell(ghost.originX, ghost.originY, ghostMarker);
+    var gk: u8 = 0;
+    while (gk < 3) {
+        var gdx: i8 = ghost.cells[gk * 2];
+        var gdy: i8 = ghost.cells[gk * 2 + 1];
+        drawGhostCell(ghost.originX + gdx, ghost.originY + gdy, ghostMarker);
+        gk = gk + 1;
+    }
+
+    var row: u8 = 1;
+    while (row <= 20) {
+        var col: u8 = 0;
+        while (col < 10) {
+            var idx: u16 = (row - 1) * 10 + col;
+            var marker: u8 = g.board[idx];
+            if (marker != 0) {
+                drawCell(col + 1, row, marker);
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+
+    var marker: u8 = g.block.shape + 1;
+    drawCell(g.block.originX, g.block.originY, marker);
+    var k: u8 = 0;
+    while (k < 3) {
+        var dx: i8 = g.block.cells[k * 2];
+        var dy: i8 = g.block.cells[k * 2 + 1];
+        drawCell(g.block.originX + dx, g.block.originY + dy, marker);
+        k = k + 1;
+    }
+
+    var nextTop: []u8 = "\u{250C}\u{2500}\u{2500}\u{2500} Next \u{2500}\u{2500}\u{2500}\u{2510}";
+    mvaddstr(1, 40, nextTop.ptr);
+    drawBottomEdge(7, 40, 14);
+    drawVEdge(2, 40, 5);
+    drawVEdge(2, 53, 5);
+    drawNextPreview(g.nextShape);
+
+    var helpTop: []u8 = "\u{250C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} Help \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}";
+    mvaddstr(9, 40, helpTop.ptr);
+    drawBottomEdge(22, 40, 19);
+    drawVEdge(10, 40, 12);
+    drawVEdge(10, 58, 12);
+    var h1: []u8 = "h, <-    Left";
+    mvaddstr(11, 42, h1.ptr);
+    var h2: []u8 = "l, ->    Right";
+    mvaddstr(12, 42, h2.ptr);
+    var h3: []u8 = "j, v     Down";
+    mvaddstr(13, 42, h3.ptr);
+    var h4: []u8 = "k, ^     Rotate";
+    mvaddstr(14, 42, h4.ptr);
+    var h5: []u8 = "space    Drop";
+    mvaddstr(15, 42, h5.ptr);
+    var h6: []u8 = "r        Restart";
+    mvaddstr(16, 42, h6.ptr);
+    var h7: []u8 = "q        Quit";
+    mvaddstr(17, 42, h7.ptr);
+
+    refresh();
+    endSyncOutput();
+}
+
+fn levelDelayMs(level: u8) i32 {
+    if (level == 0) { return 400; }
+    if (level == 1) { return 290; }
+    if (level == 2) { return 209; }
+    if (level == 3) { return 151; }
+    if (level == 4) { return 109; }
+    if (level == 5) { return 79; }
+    if (level == 6) { return 57; }
+    if (level == 7) { return 41; }
+    if (level == 8) { return 30; }
+    if (level == 9) { return 22; }
+    if (level == 10) { return 16; }
+    if (level == 11) { return 11; }
+    if (level == 12) { return 8; }
+    if (level == 13) { return 6; }
+    if (level == 14) { return 4; }
+    return 3;
+}
+
+fn main() {
+	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
+    // xterm-kitty, and xterm-rio terminfo entries make ncurses skip the
+    // bottom-row redraw through a capability those terminals implement
+    // differently than xterm.
+    var termVar: []u8 = "TERM";
+    var termVal: []u8 = "xterm-256color";
+    setenv(termVar.ptr, termVal.ptr, 1);
+
+    var loc: []u8 = "";
+    setlocale(0, loc.ptr);
+
+    var win: *u8 = initscr();
+    cbreak();
+    noecho();
+    keypad(win, 1);
+    nodelay(win, 1);
+    curs_set(0);
+    initColors();
+
+    var g: Game = initGame();
+    g.rngState = 1469598103;
+    g = shuffleBag(g);
+
+    var running: i32 = 1;
+    var sinceTickMs: i32 = 0;
+    var frameMs: i32 = 16;
+    while (running == 1) {
+        // Drain all pending keys this frame. ncurses returns ERR=-1 when no
+        // input is available (we set nodelay above).
+        var keepReading: i32 = 1;
+        while (keepReading == 1) {
+            var key: i32 = getch();
+            if (key == -1) {
+                keepReading = 0;
+            } else if (key == 113) {
+                running = 0;
+                keepReading = 0;
+            } else if (key == 260) {
+                g = shift(g, 0);
+            } else if (key == 104) {
+                g = shift(g, 0);
+            } else if (key == 261) {
+                g = shift(g, 1);
+            } else if (key == 108) {
+                g = shift(g, 1);
+            } else if (key == 258) {
+                g = shift(g, 2);
+            } else if (key == 106) {
+                g = shift(g, 2);
+            } else if (key == 259) {
+                g = rotate(g);
+            } else if (key == 107) {
+                g = rotate(g);
+            } else if (key == 32) {
+                g = hardDrop(g);
+            } else if (key == 114) {
+                g = initGame();
+                g.rngState = 1469598103;
+                g = shuffleBag(g);
+            }
+        }
+
+        sinceTickMs = sinceTickMs + frameMs;
+        if (sinceTickMs >= levelDelayMs(g.level)) {
+            sinceTickMs = 0;
+            g = timeStep(g);
+        }
+
+        if (isGameOver(g)) {
+            renderGame(g);
+            var overFmt: []u8 = " GAME OVER ";
+            mvaddstr(11, 21, overFmt.ptr);
+            var overHint: []u8 = " q quit / r restart ";
+            mvaddstr(12, 17, overHint.ptr);
+            refresh();
+            // block-wait for q or r.
+            var waiting: i32 = 1;
+            while (waiting == 1) {
+                var k: i32 = getch();
+                if (k == 113) { running = 0; waiting = 0; }
+                if (k == 114) {
+                    g = initGame();
+                    g.rngState = 1469598103;
+                    g = shuffleBag(g);
+                    waiting = 0;
+                }
+                napms(50);
+            }
+        } else {
+            renderGame(g);
+        }
+        napms(frameMs);
+    }
+
+    endwin();
+}
+
 tfn initBlockISpawnsAtOrigin() {
     var b: Block = initBlock(0);
     assert(b.shape, 0);
     assert(b.originX, 6);
     assert(b.originY, 22);
+}
+
+tfn initBlockIHasThreeHorizontalExtras() {
+    var b: Block = initBlock(0);
+    // (-2, 0), (-1, 0), (1, 0)
+    assert(b.cells[0], -2);
+    assert(b.cells[1], 0);
+    assert(b.cells[2], -1);
+    assert(b.cells[3], 0);
+    assert(b.cells[4], 1);
+    assert(b.cells[5], 0);
+}
+
+tfn initBlockODiffers() {
+    var b: Block = initBlock(1);
+    // (-1, 0), (-1, -1), (0, -1)
+    assert(b.cells[0], -1);
+    assert(b.cells[3], -1);
+    assert(b.cells[5], -1);
+}
+
+tfn freshGameHasEmptyBoard() {
+    var g: Game = initGame();
+    assert(g.board[0], 0);
+    assert(g.board[100], 0);
+    assert(g.board[199], 0);
+}
+
+tfn isInBoundsAcceptsValidCoords() {
+    assert(isInBounds(1, 1), true);
+    assert(isInBounds(10, 20), true);
+    assert(isInBounds(5, 22), true);
+}
+
+tfn isInBoundsRejectsBadCoords() {
+    assert(isInBounds(0, 5), false);
+    assert(isInBounds(11, 5), false);
+    assert(isInBounds(5, 0), false);
+}
+
+tfn shiftLeftMovesBlock() {
+    var g: Game = initGame();
+    var x0: i8 = g.block.originX;
+    var ng: Game = shift(g, 0);
+    assert(ng.block.originX, x0 - 1);
+}
+
+tfn shiftRightMovesBlock() {
+    var g: Game = initGame();
+    var x0: i8 = g.block.originX;
+    var ng: Game = shift(g, 1);
+    assert(ng.block.originX, x0 + 1);
+}
+
+tfn shiftDownMovesBlock() {
+    var g: Game = initGame();
+    var y0: i8 = g.block.originY;
+    var ng: Game = shift(g, 2);
+    assert(ng.block.originY, y0 - 1);
+}
+
+tfn shiftLeftBlockedByWall() {
+    var g: Game = initGame();
+    // I-piece origin is x=6 with extras at x=4,5,7. Shift left until the
+    // left extra (-2 from origin) hits column 1.
+    g = shift(g, 0); // 6 -> 5  (cells at 3,4,5,6)
+    g = shift(g, 0); // 5 -> 4  (cells at 2,3,4,5)
+    g = shift(g, 0); // 4 -> 3  (cells at 1,2,3,4)
+    var beforeX: i8 = g.block.originX;
+    g = shift(g, 0); // would put cells at 0 — rejected
+    assert(g.block.originX, beforeX);
+}
+
+tfn freshBlockIsNotStopped() {
+    var g: Game = initGame();
+    assert(isStopped(g, g.block), false);
+}
+
+tfn blockOnFloorIsStopped() {
+    var g: Game = initGame();
+    // Place a custom block at y=1 directly.
+    var b: Block = initBlock(0);
+    b.originX = 5;
+    b.originY = 1;
+    assert(isStopped(g, b), true);
+}
+
+tfn freezeStampsBoardWithShapeMarker() {
+    var g: Game = initGame();
+    // Move the I-piece to the bottom and freeze it.
+    g.block.originY = 1;
+    g.block.originX = 5;
+    var ng: Game = freezeBlock(g);
+    // I-piece at origin (5,1) has extras (-2,0)(-1,0)(1,0) → cells at
+    // x=3,4,5,6 on row 1 (board indices 2,3,4,5). Marker = shape+1 = 1.
+    assert(ng.board[2], 1);
+    assert(ng.board[3], 1);
+    assert(ng.board[4], 1);
+    assert(ng.board[5], 1);
+}
+
+tfn freezeLeavesUntouchedCellsEmpty() {
+    var g: Game = initGame();
+    g.block.originY = 1;
+    g.block.originX = 5;
+    var ng: Game = freezeBlock(g);
+    assert(ng.board[0], 0);
+    assert(ng.board[6], 0);
+    assert(ng.board[10], 0);  // row 2
+}
+
+tfn timeStepGravitatesByOne() {
+    var g: Game = initGame();
+    var y0: i8 = g.block.originY;
+    var ng: Game = timeStep(g);
+    assert(ng.block.originY, y0 - 1);
+}
+
+tfn timeStepFreezesAtBottomAndSpawnsNext() {
+    var g: Game = initGame();
+    var i: u8 = 0;
+    while (i < 22) {
+        g = timeStep(g);
+        i = i + 1;
+    }
+    assert(g.block.shape, 1);
+    assert(g.block.originY, 22);
+    assert(g.board[3], 1);
+    assert(g.board[4], 1);
+    assert(g.board[5], 1);
+    assert(g.board[6], 1);
+}
+
+tfn rotateRawODoesNothing() {
+    var b: Block = initBlock(1);
+    var r: Block = rotateRaw(b);
+    assert(r.cells[0], b.cells[0]);
+    assert(r.cells[1], b.cells[1]);
+    assert(r.cells[2], b.cells[2]);
+    assert(r.cells[3], b.cells[3]);
+    assert(r.cells[4], b.cells[4]);
+    assert(r.cells[5], b.cells[5]);
+}
+
+tfn rotateRawIHorizontalToVertical() {
+    var b: Block = initBlock(0);
+    var r: Block = rotateRaw(b);
+    assert(r.cells[0], 0);  assert(r.cells[1], -2);
+    assert(r.cells[2], 0);  assert(r.cells[3], -1);
+    assert(r.cells[4], 0);  assert(r.cells[5], 1);
+}
+
+tfn rotateRawIRoundTripsBackToHorizontal() {
+    var b: Block = initBlock(0);
+    var r: Block = rotateRaw(rotateRaw(b));
+    assert(r.cells[0], -2);  assert(r.cells[1], 0);
+    assert(r.cells[2], -1);  assert(r.cells[3], 0);
+    assert(r.cells[4], 1);   assert(r.cells[5], 0);
+}
+
+tfn rotateRawTCCW() {
+    // T starts: (-1,0)(0,-1)(1,0). After CCW: (0,-1)(1,0)(0,1).
+    var b: Block = initBlock(2);
+    var r: Block = rotateRaw(b);
+    assert(r.cells[0], 0);  assert(r.cells[1], -1);
+    assert(r.cells[2], 1);  assert(r.cells[3], 0);
+    assert(r.cells[4], 0);  assert(r.cells[5], 1);
+}
+
+tfn rotateInGameSucceeds() {
+    var g: Game = initGame();
+    // Move the I-piece to a position where rotation fits, then rotate.
+    g.block.originX = 5;
+    g.block.originY = 10;
+    var ng: Game = rotate(g);
+    // After rotation the I is vertical: cells at (0,-2)(0,-1)(0,1).
+    assert(ng.block.cells[1], -2);
+    assert(ng.block.cells[3], -1);
+    assert(ng.block.cells[5], 1);
+}
+
+tfn clearFullRowsRemovesOneFullRow() {
+    var g: Game = initGame();
+    // Fill row 1 entirely.
+    var c: u16 = 0;
+    while (c < 10) {
+        g.board[c] = 3;
+        c = c + 1;
+    }
+    var ng: Game = clearFullRows(g);
+    // Row 1 is now empty.
+    var i: u16 = 0;
+    while (i < 10) {
+        assert(ng.board[i], 0);
+        i = i + 1;
+    }
+    assert(ng.linesCleared, 1);
+}
+
+tfn clearFullRowsShiftsAboveDown() {
+    var g: Game = initGame();
+    // Fill row 1 entirely; place a marker on row 2 at col 0.
+    var c: u16 = 0;
+    while (c < 10) {
+        g.board[c] = 4;
+        c = c + 1;
+    }
+    g.board[10] = 7;  // row 2, col 0
+    var ng: Game = clearFullRows(g);
+    // After clear: row 1 should now contain the previous row 2's marker.
+    assert(ng.board[0], 7);
+    assert(ng.board[1], 0);
+    // And the old row 2 cell is now empty (shifted down already).
+    assert(ng.board[10], 0);
+    assert(ng.linesCleared, 1);
+}
+
+tfn clearFullRowsClearsTwoStackedFullRows() {
+    var g: Game = initGame();
+    // Fill rows 1 and 2.
+    var i: u16 = 0;
+    while (i < 20) {
+        g.board[i] = 5;
+        i = i + 1;
+    }
+    var ng: Game = clearFullRows(g);
+    // Both rows cleared, count = 2.
+    assert(ng.linesCleared, 2);
+    var j: u16 = 0;
+    while (j < 20) {
+        assert(ng.board[j], 0);
+        j = j + 1;
+    }
+}
+
+tfn updateScoreSingleLine() {
+    var g: Game = initGame();
+    g.level = 0;
+    var ng: Game = updateScore(g, 1);
+    assert(ng.score, 40);
+}
+
+tfn updateScoreTetrisAtLevel2() {
+    var g: Game = initGame();
+    g.level = 2;
+    var ng: Game = updateScore(g, 4);
+    assert(ng.score, 3600);
+}
+
+tfn updateScoreZeroLinesNoOp() {
+    var g: Game = initGame();
+    g.level = 5;
+    var ng: Game = updateScore(g, 0);
+    assert(ng.score, 0);
+}
+
+tfn hardDropLandsOnFloor() {
+    var g: Game = initGame();
+    g = hardDrop(g);
+    // I-piece dropped from y=22; floor is y=1 → originY = 1.
+    assert(g.block.originY, 1);
+}
+
+tfn hardDropLandsOnStack() {
+    var g: Game = initGame();
+    // Place a wall of cells at row 1 (full row except column 1).
+    var c: u16 = 1;
+    while (c < 10) {
+        g.board[c] = 2;
+        c = c + 1;
+    }
+    g = hardDrop(g);
+    // I-piece (cells x=4..7) lands on row 2 because row 1 is occupied.
+    assert(g.block.originY, 2);
+}
+
+tfn isGameOverFalseAtSpawn() {
+    var g: Game = initGame();
+    assert(isGameOver(g), false);
+}
+
+tfn isGameOverTrueWhenSpawnBlocked() {
+    var g: Game = initGame();
+    var idx: u16 = boardIndex(4, 21);
+    g.board[idx] = 1;
+    idx = boardIndex(5, 21);
+    g.board[idx] = 1;
+    idx = boardIndex(6, 21);
+    g.board[idx] = 1;
+    idx = boardIndex(7, 21);
+    g.board[idx] = 1;
+    assert(isGameOver(g), true);
+}
+
+tfn timeStepClearingARowAdvancesScore() {
+    var g: Game = initGame();
+    g.level = 0;
+    var c: u16 = 0;
+    while (c < 10) {
+        if (c < 3) {
+            g.board[c] = 6;
+        }
+        if (c > 6) {
+            g.board[c] = 6;
+        }
+        c = c + 1;
+    }
+    g = hardDrop(g);
+    g = timeStep(g);
+    assert(g.linesCleared, 1);
+    assert(g.score, 40);
+}
+
+tfn shuffleBagPermutesElements() {
+    var g: Game = initGame();
+    g.rngState = 12345;
+    g = shuffleBag(g);
+    var sum: u16 = 0;
+    var i: u8 = 0;
+    while (i < 28) {
+        sum = sum + g.bag[i];
+        i = i + 1;
+    }
+    assert(sum, 84);
+}
+
+tfn shuffleBagActuallyShuffles() {
+    var g: Game = initGame();
+    g.rngState = 7;
+    var before0: u8 = g.bag[0];
+    g = shuffleBag(g);
+    // Extremely unlikely the shuffle leaves index 0..27 identical.
+    var differs: bool = false;
+    var i: u8 = 0;
+    while (i < 28) {
+        if (g.bag[i] != i % 7) {
+            differs = true;
+        }
+        i = i + 1;
+    }
+    assert(differs, true);
+}
+
+tfn nextBlockAdvancesNextShape() {
+    var g: Game = initGame();
+    var firstNext: u8 = g.nextShape;
+    var ng: Game = nextBlock(g);
+    assert(ng.block.shape, firstNext);
+    assert(ng.nextShape != firstNext, true);
+}
+
+tfn nextBlockRefillsWhenBagEmpty() {
+    var g: Game = initGame();
+    g.bagHead = 28;
+    var ng: Game = nextBlock(g);
+    assert(ng.bagHead, 1);
+}
+
+tfn levelFinishedAtTenLines() {
+    var g: Game = initGame();
+    g.level = 0;
+    g.linesCleared = 9;
+    assert(levelFinished(g), false);
+    g.linesCleared = 10;
+    assert(levelFinished(g), true);
+}
+
+tfn levelFinishedRespectsCap() {
+    var g: Game = initGame();
+    g.level = 15;
+    g.linesCleared = 1000;
+    assert(levelFinished(g), false);
 }
