@@ -1,5 +1,13 @@
 const { assert } = import("test");
 
+// the imports from ncurses that we need
+// `WINDOW *` is opaque on the C side so we
+// model it as `*u8` (we never deref it). ncurses' `bool` is traditionally
+// `unsigned char`, not C99 _Bool, so we pass i8 with 1 = TRUE, 0 = FALSE.
+
+// TODO: I am not sure about [*] notation, for now I am following zig idea but
+// it's very likely it will change.
+
 extern fn setenv(name: [*]u8, value: [*]u8, overwrite: i32) i32;
 
 fn main() {
