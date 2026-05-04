@@ -58,6 +58,104 @@ const Game = struct {
     rngState: u32,
 };
 
+fn main() {
+	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
+    // xterm-kitty, and xterm-rio terminfo entries make ncurses skip the
+    // bottom-row redraw through a capability those terminals implement
+    // differently than xterm.
+    var termVar: []u8 = "TERM";
+    var termVal: []u8 = "xterm-256color";
+    setenv(termVar.ptr, termVal.ptr, 1);
+
+    var loc: []u8 = "";
+    setlocale(0, loc.ptr);
+
+    var win: *u8 = initscr();
+    cbreak();
+    noecho();
+    keypad(win, 1);
+    nodelay(win, 1);
+    curs_set(0);
+    initColors();
+
+    var g: Game = initGame();
+    g.rngState = 1469598103;
+    g = shuffleBag(g);
+
+    var running: i32 = 1;
+    var sinceTickMs: i32 = 0;
+    var frameMs: i32 = 16;
+    while (running == 1) {
+        // Drain all pending keys this frame. ncurses returns ERR=-1 when no
+        // input is available (we set nodelay above).
+        var keepReading: i32 = 1;
+        while (keepReading == 1) {
+            var key: i32 = getch();
+            if (key == -1) {
+                keepReading = 0;
+            } else if (key == 113) {
+                running = 0;
+                keepReading = 0;
+            } else if (key == 260) {
+                g = shift(g, 0);
+            } else if (key == 104) {
+                g = shift(g, 0);
+            } else if (key == 261) {
+                g = shift(g, 1);
+            } else if (key == 108) {
+                g = shift(g, 1);
+            } else if (key == 258) {
+                g = shift(g, 2);
+            } else if (key == 106) {
+                g = shift(g, 2);
+            } else if (key == 259) {
+                g = rotate(g);
+            } else if (key == 107) {
+                g = rotate(g);
+            } else if (key == 32) {
+                g = hardDrop(g);
+            } else if (key == 114) {
+                g = initGame();
+                g.rngState = 1469598103;
+                g = shuffleBag(g);
+            }
+        }
+
+        sinceTickMs = sinceTickMs + frameMs;
+        if (sinceTickMs >= levelDelayMs(g.level)) {
+            sinceTickMs = 0;
+            g = timeStep(g);
+        }
+
+        if (isGameOver(g)) {
+            renderGame(g);
+            var overFmt: []u8 = " GAME OVER ";
+            mvaddstr(11, 21, overFmt.ptr);
+            var overHint: []u8 = " q quit / r restart ";
+            mvaddstr(12, 17, overHint.ptr);
+            refresh();
+            // block-wait for q or r.
+            var waiting: i32 = 1;
+            while (waiting == 1) {
+                var k: i32 = getch();
+                if (k == 113) { running = 0; waiting = 0; }
+                if (k == 114) {
+                    g = initGame();
+                    g.rngState = 1469598103;
+                    g = shuffleBag(g);
+                    waiting = 0;
+                }
+                napms(50);
+            }
+        } else {
+            renderGame(g);
+        }
+        napms(frameMs);
+    }
+
+    endwin();
+}
+
 // it ideally tries to match github.com/samtay/tetris's relCells impl
 fn fillRelCells(shape: u8, out: [*]i8) {
     if (shape == 0) {
@@ -702,104 +800,6 @@ fn levelDelayMs(level: u8) i32 {
     if (level == 13) { return 6; }
     if (level == 14) { return 4; }
     return 3;
-}
-
-fn main() {
-	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
-    // xterm-kitty, and xterm-rio terminfo entries make ncurses skip the
-    // bottom-row redraw through a capability those terminals implement
-    // differently than xterm.
-    var termVar: []u8 = "TERM";
-    var termVal: []u8 = "xterm-256color";
-    setenv(termVar.ptr, termVal.ptr, 1);
-
-    var loc: []u8 = "";
-    setlocale(0, loc.ptr);
-
-    var win: *u8 = initscr();
-    cbreak();
-    noecho();
-    keypad(win, 1);
-    nodelay(win, 1);
-    curs_set(0);
-    initColors();
-
-    var g: Game = initGame();
-    g.rngState = 1469598103;
-    g = shuffleBag(g);
-
-    var running: i32 = 1;
-    var sinceTickMs: i32 = 0;
-    var frameMs: i32 = 16;
-    while (running == 1) {
-        // Drain all pending keys this frame. ncurses returns ERR=-1 when no
-        // input is available (we set nodelay above).
-        var keepReading: i32 = 1;
-        while (keepReading == 1) {
-            var key: i32 = getch();
-            if (key == -1) {
-                keepReading = 0;
-            } else if (key == 113) {
-                running = 0;
-                keepReading = 0;
-            } else if (key == 260) {
-                g = shift(g, 0);
-            } else if (key == 104) {
-                g = shift(g, 0);
-            } else if (key == 261) {
-                g = shift(g, 1);
-            } else if (key == 108) {
-                g = shift(g, 1);
-            } else if (key == 258) {
-                g = shift(g, 2);
-            } else if (key == 106) {
-                g = shift(g, 2);
-            } else if (key == 259) {
-                g = rotate(g);
-            } else if (key == 107) {
-                g = rotate(g);
-            } else if (key == 32) {
-                g = hardDrop(g);
-            } else if (key == 114) {
-                g = initGame();
-                g.rngState = 1469598103;
-                g = shuffleBag(g);
-            }
-        }
-
-        sinceTickMs = sinceTickMs + frameMs;
-        if (sinceTickMs >= levelDelayMs(g.level)) {
-            sinceTickMs = 0;
-            g = timeStep(g);
-        }
-
-        if (isGameOver(g)) {
-            renderGame(g);
-            var overFmt: []u8 = " GAME OVER ";
-            mvaddstr(11, 21, overFmt.ptr);
-            var overHint: []u8 = " q quit / r restart ";
-            mvaddstr(12, 17, overHint.ptr);
-            refresh();
-            // block-wait for q or r.
-            var waiting: i32 = 1;
-            while (waiting == 1) {
-                var k: i32 = getch();
-                if (k == 113) { running = 0; waiting = 0; }
-                if (k == 114) {
-                    g = initGame();
-                    g.rngState = 1469598103;
-                    g = shuffleBag(g);
-                    waiting = 0;
-                }
-                napms(50);
-            }
-        } else {
-            renderGame(g);
-        }
-        napms(frameMs);
-    }
-
-    endwin();
 }
 
 tfn initBlockISpawnsAtOrigin() {
