@@ -8,7 +8,33 @@ const { assert } = import("test");
 // TODO: I am not sure about [*] notation, for now I am following zig idea but
 // it's very likely it will change.
 
+extern fn initscr() *u8;
+extern fn endwin() i32;
+extern fn cbreak() i32;
+extern fn noecho() i32;
+extern fn keypad(win: *u8, bf: i8) i32;
+extern fn nodelay(win: *u8, bf: i8) i32;
+extern fn curs_set(visibility: i32) i32;
+extern fn start_color() i32;
+extern fn init_pair(pair: i16, fg: i16, bg: i16) i32;
+extern fn getch() i32;
+extern fn refresh() i32;
+extern fn clear() i32;
+extern fn mvaddch(y: i32, x: i32, ch: u32) i32;
+extern fn mvprintw(y: i32, x: i32, format: [*]u8, ...) i32;
+extern fn attron(attrs: i32) i32;
+extern fn attroff(attrs: i32) i32;
+extern fn napms(ms: i32) i32;
+extern fn mvaddstr(y: i32, x: i32, s: [*]u8) i32;
+extern fn use_default_colors() i32;
+extern fn write(fd: i32, buf: [*]u8, count: u64) i64;
+extern fn setlocale(category: i32, locale: [*]u8) [*]u8;
 extern fn setenv(name: [*]u8, value: [*]u8, overwrite: i32) i32;
+
+// basically is `(n & 0xff) << 8` in ncurses' chtype encoding.
+fn colorPair(n: i32) i32 {
+    return n << 8;
+}
 
 fn main() {
 	// I am overriding $TERM before ncurses reads it. Otherwise xterm-ghostty,
