@@ -194,10 +194,12 @@ fn fillRelCells(shape: u8, out: *mut[] i8) {
 }
 
 fn initBlock(shape: u8) Block {
-    var b: Block = undefined;
-    b.shape = shape;
-    b.originX = 6;
-    b.originY = 22;
+    var b: Block = {
+        shape: shape,
+        originX: 6,
+        originY: 22,
+        cells: [0; 6],
+    };
     fillRelCells(shape, &b.cells[0]);
     return b;
 }
@@ -280,25 +282,25 @@ fn shift(g: Game, dir: u8) Game {
 }
 
 fn initGame() Game {
-    var g: Game = undefined;
-    var i: u16 = 0;
-    while (i < 220) {
-        g.board[i] = 0;
-        i = i + 1;
-    }
+    var g: Game = {
+        block: initBlock(0),
+        board: [0; 220],
+        nextShape: 0,
+        bag: [0; 28],
+        bagHead: 2,
+        score: 0,
+        linesCleared: 0,
+        level: 0,
+        progression: true,
+        rngState: 1,
+    };
     var j: u8 = 0;
     while (j < 28) {
         g.bag[j] = j % 7;
         j = j + 1;
     }
-    g.bagHead = 2;
     g.block = initBlock(g.bag[0]);
     g.nextShape = g.bag[1];
-    g.score = 0;
-    g.linesCleared = 0;
-    g.level = 0;
-    g.progression = true;
-    g.rngState = 1;
     return g;
 }
 
